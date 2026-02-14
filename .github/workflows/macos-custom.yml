@@ -122,7 +122,7 @@ To run:
 
 Note: This build may rely on Homebrew libraries present on the build runner.
 #For a portable release, consider bundling required dylibs or distributing via .pkg/.dmg.
-EOF
+#EOF
         (cd dist && tar -czf "${pkgbasename}.tar.gz" "${pkgbasename}")
 
     - name: Generate checksums
