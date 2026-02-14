@@ -116,7 +116,7 @@ jobs:
         cat > "${staging}/README.txt" <<'EOF' Owntone macOS binary package
 # ============================
 
-This archive contains the installed files under usr/, etc/, var/.
+#This archive contains the installed files under usr/, etc/, var/.
 To run:
   ./usr/sbin/owntone -f -c ./etc/owntone.conf
 
