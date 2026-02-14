@@ -113,8 +113,7 @@ jobs:
         rsync -a "$HOME/owntone_data/etc" "${staging}/"
         rsync -a "$HOME/owntone_data/var" "${staging}/"
         # Add a minimal README for users
-        cat > "${staging}/README.txt" <<'EOF'
-Owntone macOS binary package
+        cat > "${staging}/README.txt" <<'EOF' Owntone macOS binary package
 ============================
 
 This archive contains the installed files under usr/, etc/, var/.
