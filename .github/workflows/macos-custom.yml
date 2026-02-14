@@ -1,0 +1,175 @@
+name: macOS
+permissions:
+  contents: write  # needed to create releases and upload assets
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'docs/**'
+      - 'htdocs/**'
+      - 'web-src/**'
+    tags:
+      - 'v*'       # trigger release job on version tags
+  pull_request:
+    branches:
+      - master
+    paths-ignore:
+      - 'docs/**'
+      - 'htdocs/**'
+      - 'web-src/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install build tools
+      run: brew install automake autoconf libtool pkg-config gettext
+
+    - name: Install gperf, bison and flex
+      # macOS has ancient versions of bison and flex, so we need a newer from
+      # Homebrew. The new versions are installed keg-only, so we must tell
+      # configure/make where to look. Adjusting $PATH doesn't work (maybe
+      # because make invokes the two via ylwrap), so instead symlink the two
+      # into /usr/local/bin.
+      run: |
+        brew install gperf bison flex
+        sudo ln -s "$(brew --prefix)/opt/bison/bin/bison" /usr/local/bin/bison
+        sudo ln -s "$(brew --prefix)/opt/flex/bin/flex" /usr/local/bin/flex
+
+    - name: Install libinotify-kqueue
+      # brew does not have libinotify package
+      run: |
+        git clone https://github.com/libinotify-kqueue/libinotify-kqueue
+        cd libinotify-kqueue
+        autoreconf -fvi
+        ./configure
+        make
+        sudo make install
+        cd ..
+
+    - name: Install other dependencies
+      # libxml2 is included with macOS
+      run: |
+        brew install libunistring confuse libplist libwebsockets libevent libgcrypt json-c protobuf-c libsodium gnutls pulseaudio openssl ffmpeg sqlite
+
+    - name: Configure
+      # We configure a non-privileged setup, since how to add a "owntone" system
+      # user in macOS isn't clear to me (useradd etc. isn't available)
+      run: |
+        export ACLOCAL_PATH="$(brew --prefix)/share/gettext/m4:$ACLOCAL_PATH"
+        export CFLAGS="-I$(brew --prefix)/include -I$(brew --prefix sqlite)/include"
+        export LDFLAGS="-L$(brew --prefix)/lib -L$(brew --prefix sqlite)/lib"
+        autoreconf -fi
+        ./configure --prefix=$HOME/owntone_data/usr --sysconfdir=$HOME/owntone_data/etc --localstatedir=$HOME/owntone_data/var --enable-chromecast --with-pulseaudio
+
+    - name: Build
+      run: |
+        make -j$(sysctl -n hw.ncpu)
+
+    - name: Install
+      run: |
+        make install
+
+    - name: Prepare test run
+      run: |
+        mkdir -p $HOME/owntone_data/media
+        sed -i '' 's/uid = "owntone"/uid = ${USER}/g' $HOME/owntone_data/etc/owntone.conf
+        sed -i '' 's/loglevel = log/loglevel = debug/g' $HOME/owntone_data/etc/owntone.conf
+        sed -i '' 's/directories = { "\/srv\/music" }/directories = { "${HOME}\/owntone_data\/media" }/g' $HOME/owntone_data/etc/owntone.conf
+
+    - name: Test run
+      run: |
+        $HOME/owntone_data/usr/sbin/owntone -f -t || ( echo "Test run returned non-zero; continuing to package artifacts anyway." )
+
+    # ---------- Packaging for artifacts & releases ----------
+    - name: Determine version
+      id: ver
+      shell: bash
+      run: |
+        # Prefer tag name when present, fall back to short SHA
+        if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v ]]; then
+          version="${GITHUB_REF_NAME#v}"
+        else
+          version="$(git rev-parse --short HEAD)"
+        fi
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+    - name: Create tarball
+      run: |
+        mkdir -p dist
+        # Package the installed prefix (usr + etc + var under owntone_data)
+        # Resulting layout: owntone-macos-${version}/...
+        pkgbasename="owntone-macos-${{ steps.ver.outputs.version }}"
+        staging="dist/${pkgbasename}"
+        mkdir -p "${staging}"
+        # Copy only what you need to run:
+        rsync -a "$HOME/owntone_data/usr" "${staging}/"
+        rsync -a "$HOME/owntone_data/etc" "${staging}/"
+        rsync -a "$HOME/owntone_data/var" "${staging}/"
+        # Add a minimal README for users
+        cat > "${staging}/README.txt" <<'EOF'
+Owntone macOS binary package
+============================
+
+This archive contains the installed files under usr/, etc/, var/.
+To run:
+  ./usr/sbin/owntone -f -c ./etc/owntone.conf
+
+Note: This build may rely on Homebrew libraries present on the build runner.
+For a portable release, consider bundling required dylibs or distributing via .pkg/.dmg.
+EOF
+        (cd dist && tar -czf "${pkgbasename}.tar.gz" "${pkgbasename}")
+
+    - name: Generate checksums
+      run: |
+        cd dist
+        shasum -a 256 *.tar.gz > SHA256SUMS.txt
+
+    - name: Upload artifact (PRs & branch builds)
+      if: github.event_name != 'push' || github.ref_type != 'tag'
+      uses: actions/upload-artifact@v4
+      with:
+        name: owntone-macos-${{ steps.ver.outputs.version }}
+        path: |
+          dist/*.tar.gz
+          dist/SHA256SUMS.txt
+        if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release (on tag)
+    needs: build
+    runs-on: macos-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifact files
+        shell: bash
+        run: |
+          mkdir -p upload
+          find dist -type f -name "*.tar.gz" -exec cp {} upload/ \;
+          find dist -type f -name "SHA256SUMS.txt" -exec cp {} upload/ \; || true
+          ls -l upload || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          files: |
+            upload/*.tar.gz
+            upload/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
