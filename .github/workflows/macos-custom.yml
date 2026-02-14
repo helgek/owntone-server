@@ -121,7 +121,7 @@ To run:
   ./usr/sbin/owntone -f -c ./etc/owntone.conf
 
 Note: This build may rely on Homebrew libraries present on the build runner.
-For a portable release, consider bundling required dylibs or distributing via .pkg/.dmg.
+#For a portable release, consider bundling required dylibs or distributing via .pkg/.dmg.
 EOF
         (cd dist && tar -czf "${pkgbasename}.tar.gz" "${pkgbasename}")
 
